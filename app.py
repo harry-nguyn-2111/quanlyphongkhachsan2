@@ -36,10 +36,7 @@ MYSQL_DATABASE = "defaultdb"
 
 # Có thể đặt mật khẩu bằng biến môi trường MYSQL_PASSWORD.
 # Nếu chưa có biến môi trường thì nhập mật khẩu vào dòng bên dưới.
-MYSQL_PASSWORD = os.getenv(
-    "MYSQL_PASSWORD",
-    "THAY_MAT_KHAU_AIVEN_CUA_BAN_VAO_DAY"
-)
+MYSQL_PASSWORD = "AVNS_rh-nVNeJhxVV2BtOJfT"
 
 
 # ============================================================
