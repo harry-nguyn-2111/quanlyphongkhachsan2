@@ -26,10 +26,10 @@ st.set_page_config(
 #
 # ============================================================
 
-MYSQL_HOST = "YOUR_AIVEN_HOST"
-MYSQL_PORT = 3306
-MYSQL_USER = "YOUR_AIVEN_USER"
-MYSQL_PASSWORD = "YOUR_AIVEN_PASSWORD"
+MYSQL_HOST = "mysql-425beae-quantricongngheso.d.aivencloud.com"
+MYSQL_PORT = 28430
+MYSQL_USER = "avnadmin"
+MYSQL_PASSWORD = "AVNS_rh-nVNeJhxVV2BtOJfT"
 MYSQL_DATABASE = "defaultdb"
 
 # Nếu Aiven yêu cầu SSL và bạn có file CA:
