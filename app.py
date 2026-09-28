@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, date
 import mysql.connector
 from mysql.connector import Error
-import socket
 
 # ============================================================
 # CẤU HÌNH STREAMLIT
@@ -43,20 +42,32 @@ DB_CONFIG = {
 
 @st.cache_resource
 def get_db_connection():
-    """Tạo connection MySQL Aiven và báo lỗi rõ ràng nếu DNS/SSL/kết nối thất bại."""
-    host = DB_CONFIG["host"]
-    port = DB_CONFIG["port"]
-
-    # Kiểm tra DNS trước khi gọi MySQL Connector.
+    """Kết nối trực tiếp tới MySQL Aiven."""
     try:
-        socket.gethostbyname(host)
-    except socket.gaierror as e:
+        conn = mysql.connector.connect(
+            host="mysql-425beae-quantricongngheso.d.aivencloud.com",
+            port=28430,
+            user="avnadmin",
+            password="AVNS_rh-nVNeJhxVV2BtOJfT",
+            database="defaultdb",
+            ssl_disabled=False,
+            ssl_verify_cert=False,
+            ssl_verify_identity=False,
+            connection_timeout=20,
+        )
+
+        if conn.is_connected():
+            return conn
+
+        st.error("❌ Không thể kết nối đến MySQL Aiven.")
+        st.stop()
+
+    except Error as e:
         st.error(
-            "❌ Không phân giải được hostname Aiven.\\n\\n"
-            f"Host: `{host}`\\n"
-            f"Port: `{port}`\\n\\n"
-            "Hãy kiểm tra Internet/DNS hoặc thử lệnh `nslookup "
-            f"{host}` trong CMD."
+            "❌ Không thể kết nối MySQL Aiven.\n\n"
+            f"Host: `mysql-425beae-quantricongngheso.d.aivencloud.com`\n"
+            f"Port: `28430`\n\n"
+            f"Lỗi MySQL: `{e}`"
         )
         st.stop()
 
