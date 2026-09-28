@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, date
 import mysql.connector
 from mysql.connector import Error
+import socket
 
 # ============================================================
 # CẤU HÌNH STREAMLIT
@@ -24,15 +25,13 @@ st.set_page_config(
 # trực tiếp trong source code.
 
 DB_CONFIG = {
-    database: "defaultdb",
-    host: "mysql-425beae-quantricongngheso.d.aivencloud.com",
-    port: 28430,
-    user: "avnadmin",
-    password: "AVNS_rh-nVNeJhxVV2BtOJfT",
-    ssl_disabled: False,
-    # Aiven MySQL thường yêu cầu kết nối SSL.
-    # Không bật verify certificate để app có thể chạy ngay
-    # nếu chưa tải CA certificate của Aiven.
+    "database": "defaultdb",
+    "host": "mysql-425beae-quantricongngheso.d.aivencloud.com",
+    "port": 28430,
+    "user": "avnadmin",
+    "password": "AVNS_rh-nVNeJhxVV2BtOJfT",
+    # Aiven hiển thị SSL mode = REQUIRED
+    "ssl_disabled": False,
     "ssl_verify_cert": False,
     "ssl_verify_identity": False,
     "connection_timeout": 15,
@@ -44,7 +43,23 @@ DB_CONFIG = {
 
 @st.cache_resource
 def get_db_connection():
-    """Tạo một connection MySQL dùng lại trong phiên Streamlit."""
+    """Tạo connection MySQL Aiven và báo lỗi rõ ràng nếu DNS/SSL/kết nối thất bại."""
+    host = DB_CONFIG["host"]
+    port = DB_CONFIG["port"]
+
+    # Kiểm tra DNS trước khi gọi MySQL Connector.
+    try:
+        socket.gethostbyname(host)
+    except socket.gaierror as e:
+        st.error(
+            "❌ Không phân giải được hostname Aiven.\\n\\n"
+            f"Host: `{host}`\\n"
+            f"Port: `{port}`\\n\\n"
+            "Hãy kiểm tra Internet/DNS hoặc thử lệnh `nslookup "
+            f"{host}` trong CMD."
+        )
+        st.stop()
+
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
 
@@ -54,7 +69,12 @@ def get_db_connection():
         raise ConnectionError("Không thể kết nối MySQL Aiven.")
 
     except Error as e:
-        st.error(f"❌ Không thể kết nối MySQL Aiven: {e}")
+        st.error(
+            "❌ Không thể kết nối MySQL Aiven.\\n\\n"
+            f"Host: `{host}`\\n"
+            f"Port: `{port}`\\n\\n"
+            f"Lỗi MySQL: `{e}`"
+        )
         st.stop()
 
 
