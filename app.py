@@ -24,12 +24,12 @@ st.set_page_config(
 # trực tiếp trong source code.
 
 DB_CONFIG = {
-    "database": "defaultdb",
-    "host": "mysql-425beae-quantricongngheso.d.aivencloud.com",
-    "port": 28430,
-    "user": "avnadmin",
-    "password": "AVNS_rh-nVNeJhxVV2BtOJfT",
-    "ssl_disabled": False,
+    database: "defaultdb",
+    host: "mysql-425beae-quantricongngheso.d.aivencloud.com",
+    port: 28430,
+    user: "avnadmin",
+    password: "AVNS_rh-nVNeJhxVV2BtOJfT",
+    ssl_disabled: False,
     # Aiven MySQL thường yêu cầu kết nối SSL.
     # Không bật verify certificate để app có thể chạy ngay
     # nếu chưa tải CA certificate của Aiven.
