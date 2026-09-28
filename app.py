@@ -46,30 +46,23 @@ MYSQL_SSL_CA = None
 @st.cache_resource
 def get_connection():
     try:
-        config = {
-            "host": MYSQL_HOST,
-            "port": MYSQL_PORT,
-            "user": MYSQL_USER,
-            "password": MYSQL_PASSWORD,
-            "database": MYSQL_DATABASE,
-            "connection_timeout": 20,
-        }
-
-        # Nếu có CA certificate
-        if MYSQL_SSL_CA:
-            config["ssl_ca"] = MYSQL_SSL_CA
-            config["ssl_verify_cert"] = True
-            config["ssl_verify_identity"] = True
-
-        conn = mysql.connector.connect(**config)
+        conn = mysql.connector.connect(
+            host=MYSQL_HOST,
+            port=MYSQL_PORT,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DATABASE,
+            ssl_disabled=False,
+            ssl_verify_cert=False,
+            ssl_verify_identity=False,
+            connection_timeout=30
+        )
 
         if conn.is_connected():
             return conn
 
-        return None
-
     except Error as e:
-        st.error(f"❌ Không thể kết nối MySQL Aiven: {e}")
+        st.error(f"❌ Lỗi kết nối MySQL Aiven: {e}")
         return None
 
 
