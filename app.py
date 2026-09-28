@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, date
 import mysql.connector
-from mysql.connector import Error
+from mysql.connector import Error, IntegrityError
 
 # ============================================================
-# CẤU HÌNH STREAMLIT
+# CẤU HÌNH
 # ============================================================
 
 st.set_page_config(
@@ -16,195 +16,154 @@ st.set_page_config(
 )
 
 # ============================================================
-# MYSQL AIVEN
+# THÔNG TIN KẾT NỐI MYSQL AIVEN
 # ============================================================
-# Thông tin database Aiven người dùng cung cấp.
-# Khuyến nghị khi deploy thật: chuyển các thông tin này sang
-# st.secrets hoặc biến môi trường để không phải ghi password
-# trực tiếp trong source code.
 
 DB_CONFIG = {
-    "database": "defaultdb",
     "host": "mysql-425beae-quantricongngheso.d.aivencloud.com",
     "port": 28430,
+    "database": "defaultdb",
     "user": "avnadmin",
-    "password": "AVNS_rh-nVNeJhxVV2BtOJfT",
-    # Aiven hiển thị SSL mode = REQUIRED
+    "password": "AVNS_rh-nVNeJhxVV2Bt0JfT",
+
+    # Aiven yêu cầu kết nối SSL.
+    # verify_cert=False giúp app kết nối mà không cần tải riêng CA certificate.
     "ssl_disabled": False,
     "ssl_verify_cert": False,
     "ssl_verify_identity": False,
-    "connection_timeout": 15,
 }
+
 
 # ============================================================
 # DATABASE
 # ============================================================
 
-@st.cache_resource
-def get_db_connection():
-    """Kết nối trực tiếp tới MySQL Aiven."""
-    try:
-        conn = mysql.connector.connect(
-            host="mysql-425beae-quantricongngheso.d.aivencloud.com",
-            port=28430,
-            user="avnadmin",
-            password="AVNS_rh-nVNeJhxVV2BtOJfT",
-            database="defaultdb",
-            ssl_disabled=False,
-            ssl_verify_cert=False,
-            ssl_verify_identity=False,
-            connection_timeout=20,
-        )
-
-        if conn.is_connected():
-            return conn
-
-        st.error("❌ Không thể kết nối đến MySQL Aiven.")
-        st.stop()
-
-    except Error as e:
-        st.error(
-            "❌ Không thể kết nối MySQL Aiven.\n\n"
-            f"Host: `mysql-425beae-quantricongngheso.d.aivencloud.com`\n"
-            f"Port: `28430`\n\n"
-            f"Lỗi MySQL: `{e}`"
-        )
-        st.stop()
-
-    try:
-        conn = mysql.connector.connect(**DB_CONFIG)
-
-        if conn.is_connected():
-            return conn
-
-        raise ConnectionError("Không thể kết nối MySQL Aiven.")
-
-    except Error as e:
-        st.error(
-            "❌ Không thể kết nối MySQL Aiven.\\n\\n"
-            f"Host: `{host}`\\n"
-            f"Port: `{port}`\\n\\n"
-            f"Lỗi MySQL: `{e}`"
-        )
-        st.stop()
+def get_connection():
+    """Tạo một kết nối mới tới MySQL Aiven."""
+    return mysql.connector.connect(**DB_CONFIG)
 
 
 def execute_query(query, params=None, fetch=False, many=False):
-    """
-    Thực thi SQL an toàn bằng parameterized query.
-    fetch=True: trả về danh sách dict.
-    """
-    conn = get_db_connection()
+    """Thực thi câu lệnh SQL và tự đóng connection/cursor."""
+    conn = None
     cursor = None
 
     try:
-        # reconnect nếu connection bị mất
-        if not conn.is_connected():
-            conn.reconnect(attempts=3, delay=2)
-
+        conn = get_connection()
         cursor = conn.cursor(dictionary=True)
 
         if many:
-            cursor.executemany(query, params or [])
+            cursor.executemany(query, params)
         else:
-            cursor.execute(query, params or ())
+            cursor.execute(query, params)
 
         if fetch:
             return cursor.fetchall()
 
         conn.commit()
-        return cursor.rowcount
+        return True
 
     except Error as e:
-        conn.rollback()
-        raise e
+        if conn:
+            conn.rollback()
+        st.error(f"Lỗi cơ sở dữ liệu: {e}")
+        return None
 
     finally:
-        if cursor is not None:
+        if cursor:
             cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
 
 
-def execute_scalar(query, params=None):
-    """Lấy một giá trị duy nhất từ database."""
+def get_dataframe(query, params=None):
+    """Đọc dữ liệu MySQL thành DataFrame."""
     rows = execute_query(query, params, fetch=True)
 
-    if not rows:
-        return 0
+    if rows is None:
+        return pd.DataFrame()
 
-    first_row = rows[0]
-    return next(iter(first_row.values()))
+    return pd.DataFrame(rows)
 
 
 def init_database():
-    """Tạo toàn bộ bảng cần thiết."""
-    queries = [
-        """
-        CREATE TABLE IF NOT EXISTS rooms (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            room_number VARCHAR(50) NOT NULL UNIQUE,
-            room_type VARCHAR(50) NOT NULL,
-            floor INT NOT NULL DEFAULT 1,
-            price DECIMAL(15,2) NOT NULL DEFAULT 0,
-            status VARCHAR(30) NOT NULL DEFAULT 'Trống',
-            guest_name VARCHAR(255) NOT NULL DEFAULT '',
-            phone VARCHAR(50) NOT NULL DEFAULT '',
-            checkin DATE NULL,
-            checkout DATE NULL,
-            note TEXT NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-                ON UPDATE CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-        """,
+    """Tạo các bảng nếu chưa tồn tại."""
 
-        """
-        CREATE TABLE IF NOT EXISTS housekeeping (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            room_number VARCHAR(50) NOT NULL,
-            task VARCHAR(255) NOT NULL,
-            completed TINYINT(1) NOT NULL DEFAULT 0,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-                ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_housekeeping_room (room_number)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-        """,
+    conn = None
+    cursor = None
 
-        """
-        CREATE TABLE IF NOT EXISTS minibar (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            room_number VARCHAR(50) NOT NULL,
-            item VARCHAR(255) NOT NULL,
-            quantity INT NOT NULL DEFAULT 0,
-            price DECIMAL(15,2) NOT NULL DEFAULT 0,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_minibar_room (room_number)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-        """,
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
 
-        """
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            room_number VARCHAR(50) NOT NULL,
-            guest_name VARCHAR(255) NOT NULL DEFAULT '',
-            transaction_type VARCHAR(100) NOT NULL,
-            amount DECIMAL(15,2) NOT NULL DEFAULT 0,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_transactions_room (room_number),
-            INDEX idx_transactions_type (transaction_type),
-            INDEX idx_transactions_created (created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-        """
-    ]
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS rooms (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                room_number VARCHAR(50) UNIQUE NOT NULL,
+                room_type VARCHAR(50),
+                floor INT,
+                price DECIMAL(15,2),
+                status VARCHAR(30) DEFAULT 'Trống',
+                guest_name VARCHAR(255) DEFAULT '',
+                phone VARCHAR(50) DEFAULT '',
+                checkin VARCHAR(30) DEFAULT '',
+                checkout VARCHAR(30) DEFAULT '',
+                note TEXT
+            )
+        """)
 
-    for query in queries:
-        execute_query(query)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS housekeeping (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                room_number VARCHAR(50),
+                task VARCHAR(255),
+                completed INT DEFAULT 0,
+                updated_at VARCHAR(30)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS minibar (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                room_number VARCHAR(50),
+                item VARCHAR(255),
+                quantity INT DEFAULT 0,
+                price DECIMAL(15,2) DEFAULT 0
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                room_number VARCHAR(50),
+                guest_name VARCHAR(255),
+                transaction_type VARCHAR(100),
+                amount DECIMAL(15,2),
+                created_at VARCHAR(30)
+            )
+        """)
+
+        conn.commit()
+
+    except Error as e:
+        st.error(f"Không thể khởi tạo database Aiven: {e}")
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
+
+
+# Khởi tạo database
+init_database()
 
 
 # ============================================================
 # DỮ LIỆU MẶC ĐỊNH
 # ============================================================
 
-DEFAULT_ROOMS = [
+default_rooms = [
     ("101", "Standard", 1, 500000),
     ("102", "Standard", 1, 500000),
     ("103", "Standard", 1, 500000),
@@ -218,26 +177,17 @@ DEFAULT_ROOMS = [
 ]
 
 
-def seed_default_rooms():
-    """Thêm phòng mẫu nếu database chưa có phòng."""
-    count = execute_scalar("SELECT COUNT(*) AS total FROM rooms")
-
-    if int(count or 0) == 0:
-        query = """
-            INSERT INTO rooms
-            (room_number, room_type, floor, price, status)
-            VALUES (%s, %s, %s, %s, 'Trống')
-        """
-        execute_query(query, DEFAULT_ROOMS, many=True)
+def insert_default_rooms():
+    """Thêm phòng mặc định nếu phòng chưa tồn tại."""
+    query = """
+        INSERT IGNORE INTO rooms
+        (room_number, room_type, floor, price)
+        VALUES (%s, %s, %s, %s)
+    """
+    execute_query(query, default_rooms, many=True)
 
 
-# Khởi tạo DB ngay khi app chạy
-try:
-    init_database()
-    seed_default_rooms()
-except Error as e:
-    st.error(f"❌ Lỗi khởi tạo database: {e}")
-    st.stop()
+insert_default_rooms()
 
 
 # ============================================================
@@ -247,72 +197,37 @@ except Error as e:
 def money(value):
     try:
         return f"{float(value):,.0f} VNĐ"
-    except (TypeError, ValueError):
+    except (ValueError, TypeError):
         return "0 VNĐ"
 
 
 def get_rooms():
-    rows = execute_query(
-        """
-        SELECT
-            id,
-            room_number,
-            room_type,
-            floor,
-            price,
-            status,
-            guest_name,
-            phone,
-            DATE_FORMAT(checkin, '%%Y-%%m-%%d') AS checkin,
-            DATE_FORMAT(checkout, '%%Y-%%m-%%d') AS checkout,
-            note,
-            created_at,
-            updated_at
+    return get_dataframe("""
+        SELECT *
         FROM rooms
         ORDER BY room_number
-        """,
-        fetch=True
-    )
-    return pd.DataFrame(rows)
+    """)
 
 
 def update_room_status(room_number, status):
-    execute_query(
-        """
-        UPDATE rooms
-        SET status=%s
-        WHERE room_number=%s
-        """,
+    return execute_query(
+        "UPDATE rooms SET status=%s WHERE room_number=%s",
         (status, room_number)
     )
 
 
 def add_transaction(room_number, guest_name, transaction_type, amount):
-    execute_query(
-        """
+    return execute_query("""
         INSERT INTO transactions
         (room_number, guest_name, transaction_type, amount, created_at)
-        VALUES (%s, %s, %s, %s, NOW())
-        """,
-        (
-            room_number,
-            guest_name,
-            transaction_type,
-            float(amount)
-        )
-    )
-
-
-def get_minibar_total(room_number):
-    value = execute_scalar(
-        """
-        SELECT COALESCE(SUM(quantity * price), 0) AS total
-        FROM minibar
-        WHERE room_number=%s
-        """,
-        (room_number,)
-    )
-    return float(value or 0)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (
+        room_number,
+        guest_name,
+        transaction_type,
+        amount,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
 
 
 # ============================================================
@@ -320,7 +235,7 @@ def get_minibar_total(room_number):
 # ============================================================
 
 st.sidebar.title("🏨 HOTEL MANAGER")
-st.sidebar.caption("Hệ thống quản lý khách sạn • MySQL Aiven")
+st.sidebar.caption("Hệ thống quản lý khách sạn")
 
 menu = st.sidebar.radio(
     "MENU",
@@ -385,7 +300,7 @@ if menu == "📊 Tổng quan":
 
     cols = st.columns(5)
 
-    status_icons = {
+    status_colors = {
         "Trống": "🟢",
         "Đang ở": "🔴",
         "Đang dọn": "🟡",
@@ -393,18 +308,17 @@ if menu == "📊 Tổng quan":
     }
 
     for index, room in rooms.iterrows():
-
         col = cols[index % 5]
 
         with col:
             st.markdown(
                 f"""
-### {room['room_number']}
-{status_icons.get(room['status'], "⚪")} **{room['status']}**
+                ### {room['room_number']}
+                {status_colors.get(room['status'], "⚪")} **{room['status']}**
 
-Loại: {room['room_type']}  
-Giá: {money(room['price'])}
-"""
+                Loại: {room['room_type']}  
+                Giá: {money(room['price'])}
+                """
             )
 
 
@@ -419,7 +333,7 @@ elif menu == "🛏️ Quản lý phòng":
     rooms = get_rooms()
 
     if rooms.empty:
-        st.info("Chưa có phòng.")
+        st.warning("Chưa có phòng trong hệ thống.")
     else:
         col1, col2 = st.columns(2)
 
@@ -470,7 +384,7 @@ elif menu == "🛏️ Quản lý phòng":
                 "floor": "Tầng",
                 "price": st.column_config.NumberColumn(
                     "Giá phòng",
-                    format="%.0f VNĐ"
+                    format="%d VNĐ"
                 ),
                 "status": "Trạng thái",
                 "guest_name": "Khách",
@@ -503,14 +417,11 @@ elif menu == "🛏️ Quản lý phòng":
             "💾 Cập nhật trạng thái",
             type="primary"
         ):
-            try:
-                update_room_status(room_number, new_status)
+            if update_room_status(room_number, new_status):
                 st.success(
                     f"Phòng {room_number} → {new_status}"
                 )
                 st.rerun()
-            except Error as e:
-                st.error(f"Lỗi cập nhật: {e}")
 
 
 # ============================================================
@@ -585,38 +496,33 @@ elif menu == "📋 Nhận phòng":
 
             else:
 
-                try:
-                    execute_query(
-                        """
-                        UPDATE rooms
-                        SET
-                            status='Đang ở',
-                            guest_name=%s,
-                            phone=%s,
-                            checkin=%s,
-                            checkout=%s,
-                            note=%s
-                        WHERE room_number=%s
-                        """,
-                        (
-                            guest_name.strip(),
-                            phone.strip(),
-                            checkin_date,
-                            checkout_date,
-                            note.strip(),
-                            room_number
-                        )
-                    )
+                result = execute_query("""
+                    UPDATE rooms
+                    SET status='Đang ở',
+                        guest_name=%s,
+                        phone=%s,
+                        checkin=%s,
+                        checkout=%s,
+                        note=%s
+                    WHERE room_number=%s
+                """, (
+                    guest_name,
+                    phone,
+                    str(checkin_date),
+                    str(checkout_date),
+                    note,
+                    room_number
+                ))
+
+                if result:
 
                     room_data = rooms[
                         rooms["room_number"] == room_number
                     ].iloc[0]
 
-                    # Ghi nhận tiền phòng vào giao dịch.
-                    # Giữ nguyên cách hoạt động của phiên bản SQLite.
                     add_transaction(
                         room_number,
-                        guest_name.strip(),
+                        guest_name,
                         "Tiền phòng",
                         room_data["price"]
                     )
@@ -626,9 +532,6 @@ elif menu == "📋 Nhận phòng":
                     )
 
                     st.rerun()
-
-                except Error as e:
-                    st.error(f"❌ Lỗi nhận phòng: {e}")
 
 
 # ============================================================
@@ -677,15 +580,25 @@ elif menu == "🚪 Trả phòng":
 
         st.divider()
 
-        minibar_total = get_minibar_total(room_number)
+        minibar_result = execute_query("""
+            SELECT COALESCE(SUM(quantity * price), 0) AS total
+            FROM minibar
+            WHERE room_number=%s
+        """, (room_number,), fetch=True)
+
+        minibar_total = 0
+
+        if minibar_result:
+            minibar_total = float(minibar_result[0]["total"] or 0)
 
         other_charge = st.number_input(
             "💳 Chi phí phát sinh khác",
-            min_value=0.0,
-            step=50000.0
+            min_value=0,
+            step=50000
         )
 
         room_price = float(room["price"])
+
         total = room_price + minibar_total + other_charge
 
         st.subheader("💰 Tổng thanh toán")
@@ -717,56 +630,35 @@ elif menu == "🚪 Trả phòng":
             type="primary"
         ):
 
-            try:
-                # Ghi giao dịch thanh toán.
-                add_transaction(
-                    room_number,
-                    room["guest_name"],
-                    "Thanh toán",
-                    total
-                )
+            add_transaction(
+                room_number,
+                room["guest_name"],
+                "Thanh toán",
+                total
+            )
 
-                # Nếu có chi phí phát sinh, ghi riêng để dễ thống kê.
-                if other_charge > 0:
-                    add_transaction(
-                        room_number,
-                        room["guest_name"],
-                        "Chi phí phát sinh",
-                        other_charge
-                    )
+            execute_query("""
+                UPDATE rooms
+                SET status='Đang dọn',
+                    guest_name='',
+                    phone='',
+                    checkin='',
+                    checkout='',
+                    note=''
+                WHERE room_number=%s
+            """, (room_number,))
 
-                execute_query(
-                    """
-                    UPDATE rooms
-                    SET
-                        status='Đang dọn',
-                        guest_name='',
-                        phone='',
-                        checkin=NULL,
-                        checkout=NULL,
-                        note=''
-                    WHERE room_number=%s
-                    """,
-                    (room_number,)
-                )
+            execute_query("""
+                DELETE FROM minibar
+                WHERE room_number=%s
+            """, (room_number,))
 
-                execute_query(
-                    """
-                    DELETE FROM minibar
-                    WHERE room_number=%s
-                    """,
-                    (room_number,)
-                )
+            st.success(
+                f"Đã trả phòng {room_number}. "
+                f"Tổng thanh toán: {money(total)}"
+            )
 
-                st.success(
-                    f"Đã trả phòng {room_number}. "
-                    f"Tổng thanh toán: {money(total)}"
-                )
-
-                st.rerun()
-
-            except Error as e:
-                st.error(f"❌ Lỗi trả phòng: {e}")
+            st.rerun()
 
 
 # ============================================================
@@ -780,8 +672,9 @@ elif menu == "🧹 Buồng phòng":
     rooms = get_rooms()
 
     if rooms.empty:
-        st.info("Chưa có phòng.")
+        st.warning("Chưa có phòng.")
     else:
+
         room_number = st.selectbox(
             "Chọn phòng",
             rooms["room_number"].tolist()
@@ -811,11 +704,11 @@ elif menu == "🧹 Buồng phòng":
 
         completed_tasks = []
 
-        for index, task in enumerate(tasks):
+        for task in tasks:
 
             checked = st.checkbox(
                 task,
-                key=f"housekeeping_{room_number}_{index}"
+                key=f"{room_number}_{task}"
             )
 
             if checked:
@@ -842,49 +735,16 @@ elif menu == "🧹 Buồng phòng":
 
             else:
 
-                try:
-                    # Xóa checklist cũ của phòng.
-                    execute_query(
-                        """
-                        DELETE FROM housekeeping
-                        WHERE room_number=%s
-                        """,
-                        (room_number,)
-                    )
+                update_room_status(
+                    room_number,
+                    "Trống"
+                )
 
-                    # Lưu checklist đã hoàn thành.
-                    rows = [
-                        (
-                            room_number,
-                            task,
-                            1
-                        )
-                        for task in tasks
-                    ]
+                st.success(
+                    f"Phòng {room_number} đã sẵn sàng bán."
+                )
 
-                    execute_query(
-                        """
-                        INSERT INTO housekeeping
-                        (room_number, task, completed, updated_at)
-                        VALUES (%s, %s, %s, NOW())
-                        """,
-                        rows,
-                        many=True
-                    )
-
-                    update_room_status(
-                        room_number,
-                        "Trống"
-                    )
-
-                    st.success(
-                        f"Phòng {room_number} đã sẵn sàng bán."
-                    )
-
-                    st.rerun()
-
-                except Error as e:
-                    st.error(f"❌ Lỗi lưu checklist: {e}")
+                st.rerun()
 
 
 # ============================================================
@@ -898,7 +758,7 @@ elif menu == "🍾 Minibar":
     rooms = get_rooms()
 
     if rooms.empty:
-        st.info("Chưa có phòng.")
+        st.warning("Chưa có phòng.")
     else:
 
         room_number = st.selectbox(
@@ -944,76 +804,41 @@ elif menu == "🍾 Minibar":
             type="primary"
         ):
 
-            try:
-                execute_query(
-                    """
-                    INSERT INTO minibar
-                    (room_number, item, quantity, price)
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    (
-                        room_number,
-                        item,
-                        int(quantity),
-                        item_price
-                    )
-                )
-
-                st.success(
-                    f"Đã thêm {quantity} x {item}"
-                )
-
-                st.rerun()
-
-            except Error as e:
-                st.error(f"❌ Lỗi thêm minibar: {e}")
-
-        st.divider()
-
-        minibar_rows = execute_query(
-            """
-            SELECT
-                id,
+            result = execute_query("""
+                INSERT INTO minibar
+                (room_number, item, quantity, price)
+                VALUES (%s, %s, %s, %s)
+            """, (
                 room_number,
                 item,
                 quantity,
-                price,
-                quantity * price AS total
+                item_price
+            ))
+
+            if result:
+                st.success(
+                    f"Đã thêm {quantity} x {item}"
+                )
+                st.rerun()
+
+        st.divider()
+
+        minibar_data = get_dataframe("""
+            SELECT room_number,
+                   item,
+                   quantity,
+                   price,
+                   quantity * price AS total
             FROM minibar
             WHERE room_number=%s
-            ORDER BY id DESC
-            """,
-            (room_number,),
-            fetch=True
-        )
-
-        minibar_data = pd.DataFrame(minibar_rows)
+        """, (room_number,))
 
         if not minibar_data.empty:
 
             st.dataframe(
-                minibar_data[
-                    [
-                        "item",
-                        "quantity",
-                        "price",
-                        "total"
-                    ]
-                ],
+                minibar_data,
                 use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "item": "Sản phẩm",
-                    "quantity": "SL",
-                    "price": st.column_config.NumberColumn(
-                        "Đơn giá",
-                        format="%.0f VNĐ"
-                    ),
-                    "total": st.column_config.NumberColumn(
-                        "Thành tiền",
-                        format="%.0f VNĐ"
-                    )
-                }
+                hide_index=True
             )
 
             total = minibar_data["total"].sum()
@@ -1038,22 +863,9 @@ elif menu == "💰 Doanh thu":
 
     st.title("💰 Doanh thu")
 
-    transactions_rows = execute_query(
-        """
-        SELECT
-            id,
-            room_number,
-            guest_name,
-            transaction_type,
-            amount,
-            DATE_FORMAT(created_at, '%%d/%%m/%%Y %%H:%%i:%%s') AS created_at
-        FROM transactions
-        ORDER BY id DESC
-        """,
-        fetch=True
+    transactions = get_dataframe(
+        "SELECT * FROM transactions ORDER BY id DESC"
     )
-
-    transactions = pd.DataFrame(transactions_rows)
 
     if transactions.empty:
 
@@ -1071,14 +883,10 @@ elif menu == "💰 Doanh thu":
             transactions["transaction_type"] == "Thanh toán"
         ]["amount"].sum()
 
-        extra_revenue = transactions[
-            transactions["transaction_type"] == "Chi phí phát sinh"
-        ]["amount"].sum()
-
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
 
         c1.metric(
-            "💰 Tổng giao dịch",
+            "💰 Tổng doanh thu",
             money(total_revenue)
         )
 
@@ -1092,11 +900,6 @@ elif menu == "💰 Doanh thu":
             money(payment_revenue)
         )
 
-        c4.metric(
-            "➕ Phát sinh",
-            money(extra_revenue)
-        )
-
         st.divider()
 
         st.subheader("📋 Lịch sử giao dịch")
@@ -1104,18 +907,7 @@ elif menu == "💰 Doanh thu":
         st.dataframe(
             transactions,
             use_container_width=True,
-            hide_index=True,
-            column_config={
-                "id": "ID",
-                "room_number": "Phòng",
-                "guest_name": "Khách",
-                "transaction_type": "Loại giao dịch",
-                "amount": st.column_config.NumberColumn(
-                    "Số tiền",
-                    format="%.0f VNĐ"
-                ),
-                "created_at": "Thời gian"
-            }
+            hide_index=True
         )
 
         st.subheader("📊 Doanh thu theo loại")
@@ -1157,15 +949,14 @@ elif menu == "⚙️ Cài đặt":
         floor = st.number_input(
             "Tầng",
             min_value=1,
-            value=1,
-            step=1
+            value=1
         )
 
         price = st.number_input(
             "Giá phòng",
-            min_value=0.0,
-            value=500000.0,
-            step=50000.0
+            min_value=0,
+            value=500000,
+            step=50000
         )
 
         submit = st.form_submit_button(
@@ -1182,36 +973,27 @@ elif menu == "⚙️ Cài đặt":
 
             try:
 
-                execute_query(
-                    """
+                result = execute_query("""
                     INSERT INTO rooms
-                    (room_number, room_type, floor, price, status)
-                    VALUES (%s, %s, %s, %s, 'Trống')
-                    """,
-                    (
-                        room_number.strip(),
-                        room_type,
-                        int(floor),
-                        float(price)
+                    (room_number, room_type, floor, price)
+                    VALUES (%s, %s, %s, %s)
+                """, (
+                    room_number.strip(),
+                    room_type,
+                    floor,
+                    price
+                ))
+
+                if result:
+                    st.success(
+                        f"Đã thêm phòng {room_number}"
                     )
+                    st.rerun()
+
+            except Exception as e:
+                st.error(
+                    f"Số phòng này đã tồn tại hoặc có lỗi: {e}"
                 )
-
-                st.success(
-                    f"Đã thêm phòng {room_number}"
-                )
-
-                st.rerun()
-
-            except Error as e:
-
-                if getattr(e, "errno", None) == 1062:
-                    st.error(
-                        "Số phòng này đã tồn tại."
-                    )
-                else:
-                    st.error(
-                        f"❌ Không thể thêm phòng: {e}"
-                    )
 
     st.divider()
 
@@ -1233,51 +1015,16 @@ elif menu == "⚙️ Cài đặt":
             type="secondary"
         ):
 
-            try:
+            result = execute_query(
+                "DELETE FROM rooms WHERE room_number=%s",
+                (delete_room,)
+            )
 
-                # Không cho xóa phòng đang có khách.
-                current_room = rooms[
-                    rooms["room_number"] == delete_room
-                ].iloc[0]
-
-                if current_room["status"] == "Đang ở":
-                    st.error(
-                        "Không thể xóa phòng đang có khách."
-                    )
-                else:
-
-                    execute_query(
-                        """
-                        DELETE FROM minibar
-                        WHERE room_number=%s
-                        """,
-                        (delete_room,)
-                    )
-
-                    execute_query(
-                        """
-                        DELETE FROM housekeeping
-                        WHERE room_number=%s
-                        """,
-                        (delete_room,)
-                    )
-
-                    execute_query(
-                        """
-                        DELETE FROM rooms
-                        WHERE room_number=%s
-                        """,
-                        (delete_room,)
-                    )
-
-                    st.success(
-                        f"Đã xóa phòng {delete_room}"
-                    )
-
-                    st.rerun()
-
-            except Error as e:
-                st.error(f"❌ Lỗi xóa phòng: {e}")
+            if result:
+                st.success(
+                    f"Đã xóa phòng {delete_room}"
+                )
+                st.rerun()
 
 
 # ============================================================
