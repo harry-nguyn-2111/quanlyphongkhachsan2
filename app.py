@@ -33,9 +33,6 @@ MYSQL_HOST = "mysql-425beae-quantriconqngheso.d.aivencloud.com"
 MYSQL_PORT = 28430
 MYSQL_USER = "avnadmin"
 MYSQL_DATABASE = "defaultdb"
-
-# Có thể đặt mật khẩu bằng biến môi trường MYSQL_PASSWORD.
-# Nếu chưa có biến môi trường thì nhập mật khẩu vào dòng bên dưới.
 MYSQL_PASSWORD = "AVNS_rh-nVNeJhxVV2BtOJfT"
 
 
