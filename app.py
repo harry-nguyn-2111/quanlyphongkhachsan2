@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, date
 import mysql.connector
-from mysql.connector import Error, IntegrityError
+from mysql.connector import Error
+import socket
 
 # ============================================================
 # CẤU HÌNH
@@ -19,15 +20,26 @@ st.set_page_config(
 # THÔNG TIN KẾT NỐI MYSQL AIVEN
 # ============================================================
 
-DB_CONFIG = {
-    "host": "mysql-425beae-quantricongngheso.d.aivencloud.com",
-    "port": 28430,
-    "database": "defaultdb",
-    "user": "avnadmin",
-    "password": "AVNS_rh-nVNeJhxVV2Bt0JfT",
+# LƯU Ý:
+# Hãy lấy Host/Port mới nhất trực tiếp từ Aiven > Overview > Connection information.
+# Aiven có thể thay đổi hostname theo DNS zone, vì vậy không nên tự sửa hostname.
 
-    # Aiven yêu cầu kết nối SSL.
-    # verify_cert=False giúp app kết nối mà không cần tải riêng CA certificate.
+DB_HOST = "mysql-425beae-quantricongngheso.d.aivencloud.com"
+DB_PORT = 28430
+DB_NAME = "defaultdb"
+DB_USER = "avnadmin"
+DB_PASSWORD = "AVNS_rh-nVNeJhxVV2Bt0JfT"
+
+DB_CONFIG = {
+    "host": DB_HOST,
+    "port": DB_PORT,
+    "database": DB_NAME,
+    "user": DB_USER,
+    "password": DB_PASSWORD,
+    "connection_timeout": 15,
+    "autocommit": False,
+    # Aiven yêu cầu SSL. Chế độ này mã hóa kết nối nhưng không bắt buộc
+    # kiểm tra CA/hostname, nên không cần file ca.pem để chạy app.
     "ssl_disabled": False,
     "ssl_verify_cert": False,
     "ssl_verify_identity": False,
@@ -39,12 +51,40 @@ DB_CONFIG = {
 # ============================================================
 
 def get_connection():
-    """Tạo một kết nối mới tới MySQL Aiven."""
+    """Tạo kết nối tới MySQL Aiven."""
     return mysql.connector.connect(**DB_CONFIG)
 
 
-def execute_query(query, params=None, fetch=False, many=False):
-    """Thực thi câu lệnh SQL và tự đóng connection/cursor."""
+def check_database_connection():
+    """Kiểm tra DNS + kết nối MySQL trước khi chạy toàn bộ app."""
+    try:
+        # Nếu lỗi ở đây thì không phải lỗi SQL; hostname không phân giải được.
+        ip = socket.gethostbyname(DB_HOST)
+    except socket.gaierror as e:
+        return False, (
+            "Không phân giải được hostname Aiven. "
+            f"Host hiện tại: {DB_HOST}. Chi tiết: {e}"
+        )
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        return True, f"Kết nối thành công. Host {DB_HOST} → {ip}"
+    except Error as e:
+        return False, f"DNS đã hoạt động ({ip}) nhưng MySQL không kết nối được: {e}"
+    finally:
+        if cursor:
+            cursor.close()
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def execute_query(query, params=None, fetch=False, many=False, show_error=True):
+    """Thực thi SQL và tự đóng connection/cursor."""
     conn = None
     cursor = None
 
@@ -66,7 +106,8 @@ def execute_query(query, params=None, fetch=False, many=False):
     except Error as e:
         if conn:
             conn.rollback()
-        st.error(f"Lỗi cơ sở dữ liệu: {e}")
+        if show_error:
+            st.error(f"Lỗi cơ sở dữ liệu: {e}")
         return None
 
     finally:
@@ -77,18 +118,14 @@ def execute_query(query, params=None, fetch=False, many=False):
 
 
 def get_dataframe(query, params=None):
-    """Đọc dữ liệu MySQL thành DataFrame."""
     rows = execute_query(query, params, fetch=True)
-
     if rows is None:
-        return pd.DataFrame()
-
+        return None
     return pd.DataFrame(rows)
 
 
 def init_database():
     """Tạo các bảng nếu chưa tồn tại."""
-
     conn = None
     cursor = None
 
@@ -144,9 +181,11 @@ def init_database():
         """)
 
         conn.commit()
+        return True
 
     except Error as e:
         st.error(f"Không thể khởi tạo database Aiven: {e}")
+        return False
 
     finally:
         if cursor:
@@ -155,8 +194,32 @@ def init_database():
             conn.close()
 
 
-# Khởi tạo database
-init_database()
+# ------------------------------------------------------------
+# KIỂM TRA KẾT NỐI TRƯỚC KHI CHẠY APP
+# ------------------------------------------------------------
+
+_db_ok, _db_message = check_database_connection()
+
+if not _db_ok:
+    st.error("❌ Không thể kết nối MySQL Aiven")
+    st.warning(_db_message)
+    st.info(
+        "Vào Aiven → service MySQL → Overview → Connection information "
+        "và kiểm tra lại Host, Port. Nếu Host trong Aiven khác Host bên dưới, "
+        "hãy thay DB_HOST bằng Host mới nhất."
+    )
+    st.code(
+        f"Host: {DB_HOST}\n"
+        f"Port: {DB_PORT}\n"
+        f"Database: {DB_NAME}\n"
+        f"User: {DB_USER}\n"
+        "SSL: REQUIRED",
+        language="text"
+    )
+    st.stop()
+
+if not init_database():
+    st.stop()
 
 
 # ============================================================
@@ -184,7 +247,7 @@ def insert_default_rooms():
         (room_number, room_type, floor, price)
         VALUES (%s, %s, %s, %s)
     """
-    execute_query(query, default_rooms, many=True)
+    return execute_query(query, default_rooms, many=True)
 
 
 insert_default_rooms()
@@ -254,6 +317,23 @@ menu = st.sidebar.radio(
 st.sidebar.divider()
 
 rooms = get_rooms()
+
+if rooms is None:
+    st.error("Không đọc được bảng rooms từ MySQL Aiven.")
+    st.stop()
+
+# Nếu bảng tồn tại nhưng chưa có cột status (ví dụ database cũ), báo rõ thay vì KeyError.
+required_room_columns = {
+    "room_number", "room_type", "floor", "price", "status",
+    "guest_name", "phone", "checkin", "checkout"
+}
+missing_columns = required_room_columns - set(rooms.columns)
+if missing_columns:
+    st.error(
+        "Bảng rooms trên Aiven thiếu cột: " + ", ".join(sorted(missing_columns))
+    )
+    st.info("Nếu bạn đang dùng database cũ, hãy kiểm tra cấu trúc bảng rooms trên Aiven.")
+    st.stop()
 
 total_rooms = len(rooms)
 occupied = len(rooms[rooms["status"] == "Đang ở"])
